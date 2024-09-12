@@ -290,7 +290,6 @@ impl<'db> UseDefMap<'db> {
         self.public_symbols[symbol].may_be_unbound()
     }
 
-    #[allow(unused)]
     pub(crate) fn bindings_at_declaration(
         &self,
         declaration: Definition<'db>,
@@ -303,7 +302,6 @@ impl<'db> UseDefMap<'db> {
         }
     }
 
-    #[allow(unused)]
     pub(crate) fn declarations_at_binding(
         &self,
         binding: Definition<'db>,
@@ -317,7 +315,6 @@ impl<'db> UseDefMap<'db> {
         }
     }
 
-    #[allow(unused)]
     pub(crate) fn public_declarations(
         &self,
         symbol: ScopedSymbolId,
@@ -325,7 +322,6 @@ impl<'db> UseDefMap<'db> {
         self.declarations_iterator(self.public_symbols[symbol].declarations())
     }
 
-    #[allow(unused)]
     pub(crate) fn has_public_declarations(&self, symbol: ScopedSymbolId) -> bool {
         !self.public_symbols[symbol].declarations().is_empty()
     }
