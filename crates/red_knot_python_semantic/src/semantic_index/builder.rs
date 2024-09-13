@@ -48,7 +48,7 @@ pub(super) struct SemanticIndexBuilder<'db> {
     try_block_definition_states: Vec<FlowSnapshot>,
     /// Whether we are currently visiting a `try` branch
     /// of a `try`/`except` block
-    visiting_try_block: bool,
+    try_block_context: TryBlockContext,
 
     // Semantic Index fields
     scopes: IndexVec<FileScopeId, Scope>,
@@ -73,7 +73,7 @@ impl<'db> SemanticIndexBuilder<'db> {
             current_match_case: None,
             loop_break_states: vec![],
             try_block_definition_states: vec![],
-            visiting_try_block: false,
+            try_block_context: TryBlockContext::default(),
 
             scopes: IndexVec::new(),
             symbol_tables: IndexVec::new(),
@@ -111,11 +111,10 @@ impl<'db> SemanticIndexBuilder<'db> {
             parent,
             kind: node.scope_kind(),
             descendents: children_start..children_start,
-            contained_inside_try_block: self.visiting_try_block,
         };
 
-        // All scopes start off as not visiting a `try` block
-        self.visiting_try_block = false;
+        // Reset the `try` block context before pushing a new scope
+        self.try_block_context = TryBlockContext::default();
 
         let file_scope_id = self.scopes.push(scope);
         self.symbol_tables.push(SymbolTableBuilder::new());
@@ -140,13 +139,17 @@ impl<'db> SemanticIndexBuilder<'db> {
         self.scope_stack.push(file_scope_id);
     }
 
-    fn pop_scope(&mut self) -> FileScopeId {
+    fn pop_scope(&mut self, prior_try_block_context: TryBlockContext) -> FileScopeId {
         let id = self.scope_stack.pop().expect("Root scope to be present");
         let children_end = self.scopes.next_index();
         let scope = &mut self.scopes[id];
         scope.descendents = scope.descendents.start..children_end;
-        self.visiting_try_block = scope.contained_inside_try_block();
+        self.try_block_context = prior_try_block_context;
         id
+    }
+
+    const fn visiting_try_block(&self) -> bool {
+        matches!(self.try_block_context, TryBlockContext::VisitingTryBlock)
     }
 
     fn current_symbol_table(&mut self) -> &mut SymbolTableBuilder {
@@ -217,7 +220,7 @@ impl<'db> SemanticIndexBuilder<'db> {
         self.current_use_def_map_mut()
             .record_definition(symbol, definition);
 
-        if self.visiting_try_block {
+        if self.visiting_try_block() {
             self.try_block_definition_states.push(self.flow_snapshot());
         }
 
@@ -281,42 +284,41 @@ impl<'db> SemanticIndexBuilder<'db> {
         type_params: Option<&'db ast::TypeParams>,
         nested: impl FnOnce(&mut Self) -> FileScopeId,
     ) -> FileScopeId {
-        if let Some(type_params) = type_params {
-            self.push_scope(with_scope);
+        let Some(type_params) = type_params else {
+            return nested(self);
+        };
 
-            for type_param in &type_params.type_params {
-                let (name, bound, default) = match type_param {
-                    ast::TypeParam::TypeVar(ast::TypeParamTypeVar {
-                        range: _,
-                        name,
-                        bound,
-                        default,
-                    }) => (name, bound, default),
-                    ast::TypeParam::ParamSpec(ast::TypeParamParamSpec {
-                        name, default, ..
-                    }) => (name, &None, default),
-                    ast::TypeParam::TypeVarTuple(ast::TypeParamTypeVarTuple {
-                        name,
-                        default,
-                        ..
-                    }) => (name, &None, default),
-                };
-                // TODO create Definition for typevars
-                self.add_or_update_symbol(name.id.clone(), SymbolFlags::IS_DEFINED);
-                if let Some(bound) = bound {
-                    self.visit_expr(bound);
+        let try_block_context = self.try_block_context;
+        self.push_scope(with_scope);
+
+        for type_param in &type_params.type_params {
+            let (name, bound, default) = match type_param {
+                ast::TypeParam::TypeVar(ast::TypeParamTypeVar {
+                    range: _,
+                    name,
+                    bound,
+                    default,
+                }) => (name, bound, default),
+                ast::TypeParam::ParamSpec(ast::TypeParamParamSpec { name, default, .. }) => {
+                    (name, &None, default)
                 }
-                if let Some(default) = default {
-                    self.visit_expr(default);
-                }
+                ast::TypeParam::TypeVarTuple(ast::TypeParamTypeVarTuple {
+                    name, default, ..
+                }) => (name, &None, default),
+            };
+            // TODO create Definition for typevars
+            self.add_or_update_symbol(name.id.clone(), SymbolFlags::IS_DEFINED);
+            if let Some(bound) = bound {
+                self.visit_expr(bound);
+            }
+            if let Some(default) = default {
+                self.visit_expr(default);
             }
         }
 
         let nested_scope = nested(self);
 
-        if type_params.is_some() {
-            self.pop_scope();
-        }
+        self.pop_scope(try_block_context);
 
         nested_scope
     }
@@ -389,7 +391,7 @@ impl<'db> SemanticIndexBuilder<'db> {
         self.visit_body(module.suite());
 
         // Pop the root scope
-        self.pop_scope();
+        self.pop_scope(TryBlockContext::default());
         assert!(self.scope_stack.is_empty());
 
         assert!(self.current_assignment.is_none());
@@ -456,6 +458,8 @@ where
                             builder.visit_annotation(expr);
                         }
 
+                        let prior_try_block_context = builder.try_block_context;
+
                         builder.push_scope(NodeWithScopeRef::Function(function_def));
 
                         // Add symbols and definitions for the parameters to the function scope.
@@ -464,7 +468,7 @@ where
                         }
 
                         builder.visit_body(&function_def.body);
-                        builder.pop_scope()
+                        builder.pop_scope(prior_try_block_context)
                     },
                 );
                 // The default value of the parameters needs to be evaluated in the
@@ -500,10 +504,11 @@ where
                             builder.visit_arguments(arguments);
                         }
 
+                        let prior_try_block_context = builder.try_block_context;
                         builder.push_scope(NodeWithScopeRef::Class(class));
                         builder.visit_body(&class.body);
 
-                        builder.pop_scope()
+                        builder.pop_scope(prior_try_block_context)
                     },
                 );
             }
@@ -730,15 +735,15 @@ where
                 // states during the `try` block before visiting the `except` blocks.
                 let pre_try_block_state = self.flow_snapshot();
                 let saved_definition_states = std::mem::take(&mut self.try_block_definition_states);
-                let visiting_nested_try_block = self.visiting_try_block;
+                let prior_try_block_context = self.try_block_context;
 
                 // Visit the `try` block!
                 //
                 // If `visiting_try_block == true`, this informs `.add_definition()` to record the state
                 // in `self.try_block_definition_states` after each new definition is recorded.
-                self.visiting_try_block = true;
+                self.try_block_context = TryBlockContext::VisitingTryBlock;
                 self.visit_body(body);
-                self.visiting_try_block = visiting_nested_try_block;
+                self.try_block_context = prior_try_block_context;
 
                 // Save the state immediately *after* visiting the `try` block
                 // but *before* we prepare for visiting the `except` block(s).
@@ -762,7 +767,7 @@ where
                 // Account for the fact that we could be visiting a nested `try` block,
                 // in which case the outer `try` block must be kept informed about all the possible
                 // between-definition states we could have encountered in the inner `try` block(!)
-                if self.visiting_try_block {
+                if self.visiting_try_block() {
                     self.try_block_definition_states.push(self.flow_snapshot());
                 }
 
@@ -843,6 +848,7 @@ where
         self.scopes_by_expression
             .insert(expr.into(), self.current_scope());
         self.current_ast_ids().record_expression(expr);
+        let try_block_context = self.try_block_context;
 
         match expr {
             ast::Expr::Name(name_node @ ast::ExprName { id, ctx, .. }) => {
@@ -1030,7 +1036,7 @@ where
                 | ast::Expr::Generator(_)
                 | ast::Expr::DictComp(_)
         ) {
-            self.pop_scope();
+            self.pop_scope(try_block_context);
         }
     }
 
@@ -1095,6 +1101,21 @@ where
 
         self.current_match_case.as_mut().unwrap().index += 1;
     }
+}
+
+/// Whether we are or aren't visiting the `try` block of a `try`/`except` statement.
+///
+/// Note that this flag is reset to `NotVisitingTryBlock` whenever we start visiting
+/// a nested scope inside a `try` block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum TryBlockContext {
+    /// The [`SemanticIndexBuilder`] is visiting statements in the `try` block
+    /// of a `try`/`except` statement.
+    VisitingTryBlock,
+    /// The [`SemanticIndexBuilder`] is not visiting statements in the `try` block
+    /// of a `try`/`except` statement.
+    #[default]
+    NotVisitingTryBlock,
 }
 
 #[derive(Copy, Clone, Debug)]
