@@ -91,10 +91,10 @@ fn normalize_integer(input: &str) -> Cow<str> {
     // Skip the rest if `input` is not a hexinteger because there are only digits.
     if is_hex {
         for (index, c) in chars {
-            if matches!(c, 'a'..='f') {
-                // Uppercase hexdigits.
+            if matches!(c, 'A'..='F') {
+                // Lowercase hexdigits.
                 output.push_str(&input[last_index..index]);
-                output.push(c.to_ascii_uppercase());
+                output.push(c.to_ascii_lowercase());
                 last_index = index + c.len_utf8();
             }
         }
