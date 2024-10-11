@@ -3,6 +3,7 @@ use ruff_db::parsed::ParsedModule;
 use ruff_python_ast as ast;
 
 use crate::ast_node_ref::AstNodeRef;
+use crate::module_resolver::file_to_module;
 use crate::node_key::NodeKey;
 use crate::semantic_index::symbol::{FileScopeId, ScopeId, ScopedSymbolId};
 use crate::Db;
@@ -23,7 +24,7 @@ pub struct Definition<'db> {
 
     #[no_eq]
     #[return_ref]
-    pub(crate) node: DefinitionKind,
+    pub(crate) kind: DefinitionKind,
 
     #[no_eq]
     count: countme::Count<Definition<'static>>,
@@ -32,6 +33,26 @@ pub struct Definition<'db> {
 impl<'db> Definition<'db> {
     pub(crate) fn scope(self, db: &'db dyn Db) -> ScopeId<'db> {
         self.file_scope(db).to_scope_id(db, self.file(db))
+    }
+
+    pub(crate) fn category(self, db: &'db dyn Db) -> DefinitionCategory {
+        self.kind(db).category()
+    }
+
+    pub(crate) fn is_declaration(self, db: &'db dyn Db) -> bool {
+        self.kind(db).category().is_declaration()
+    }
+
+    pub(crate) fn is_binding(self, db: &'db dyn Db) -> bool {
+        self.kind(db).category().is_binding()
+    }
+
+    /// Return true if this is a symbol was defined in the `typing` or `typing_extensions` modules
+    pub(crate) fn is_typing_definition(self, db: &'db dyn Db) -> bool {
+        file_to_module(db, self.file(db)).is_some_and(|module| {
+            module.search_path().is_standard_library()
+                && matches!(&**module.name(), "typing" | "typing_extensions")
+        })
     }
 }
 
@@ -302,6 +323,41 @@ impl DefinitionNodeRef<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DefinitionCategory {
+    /// A Definition which binds a value to a name (e.g. `x = 1`).
+    Binding,
+    /// A Definition which declares the upper-bound of acceptable types for this name (`x: int`).
+    Declaration,
+    /// A Definition which both declares a type and binds a value (e.g. `x: int = 1`).
+    DeclarationAndBinding,
+}
+
+impl DefinitionCategory {
+    /// True if this definition establishes a "declared type" for the symbol.
+    ///
+    /// If so, any assignments reached by this definition are in error if they assign a value of a
+    /// type not assignable to the declared type.
+    ///
+    /// Annotations establish a declared type. So do function and class definitions, and imports.
+    pub(crate) fn is_declaration(self) -> bool {
+        matches!(
+            self,
+            DefinitionCategory::Declaration | DefinitionCategory::DeclarationAndBinding
+        )
+    }
+
+    /// True if this definition assigns a value to the symbol.
+    ///
+    /// False only for annotated assignments without a RHS.
+    pub(crate) fn is_binding(self) -> bool {
+        matches!(
+            self,
+            DefinitionCategory::Binding | DefinitionCategory::DeclarationAndBinding
+        )
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum DefinitionKind {
     Import(AstNodeRef<ast::Alias>),
@@ -319,6 +375,51 @@ pub enum DefinitionKind {
     WithItem(WithItemDefinitionKind),
     MatchPattern(MatchPatternDefinitionKind),
     ExceptHandler(ExceptHandlerDefinitionKind),
+}
+
+impl DefinitionKind {
+    pub(crate) fn category(&self) -> DefinitionCategory {
+        match self {
+            // functions, classes, and imports always bind, and we consider them declarations
+            DefinitionKind::Function(_)
+            | DefinitionKind::Class(_)
+            | DefinitionKind::Import(_)
+            | DefinitionKind::ImportFrom(_) => DefinitionCategory::DeclarationAndBinding,
+            // a parameter always binds a value, but is only a declaration if annotated
+            DefinitionKind::Parameter(parameter) => {
+                if parameter.annotation.is_some() {
+                    DefinitionCategory::DeclarationAndBinding
+                } else {
+                    DefinitionCategory::Binding
+                }
+            }
+            // presence of a default is irrelevant, same logic as for a no-default parameter
+            DefinitionKind::ParameterWithDefault(parameter_with_default) => {
+                if parameter_with_default.parameter.annotation.is_some() {
+                    DefinitionCategory::DeclarationAndBinding
+                } else {
+                    DefinitionCategory::Binding
+                }
+            }
+            // annotated assignment is always a declaration, only a binding if there is a RHS
+            DefinitionKind::AnnotatedAssignment(ann_assign) => {
+                if ann_assign.value.is_some() {
+                    DefinitionCategory::DeclarationAndBinding
+                } else {
+                    DefinitionCategory::Declaration
+                }
+            }
+            // all of these bind values without declaring a type
+            DefinitionKind::NamedExpression(_)
+            | DefinitionKind::Assignment(_)
+            | DefinitionKind::AugmentedAssignment(_)
+            | DefinitionKind::For(_)
+            | DefinitionKind::Comprehension(_)
+            | DefinitionKind::WithItem(_)
+            | DefinitionKind::MatchPattern(_)
+            | DefinitionKind::ExceptHandler(_) => DefinitionCategory::Binding,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -441,8 +542,12 @@ pub struct ExceptHandlerDefinitionKind {
 }
 
 impl ExceptHandlerDefinitionKind {
+    pub(crate) fn node(&self) -> &ast::ExceptHandlerExceptHandler {
+        self.handler.node()
+    }
+
     pub(crate) fn handled_exceptions(&self) -> Option<&ast::Expr> {
-        self.handler.node().type_.as_deref()
+        self.node().type_.as_deref()
     }
 
     pub(crate) fn is_star(&self) -> bool {

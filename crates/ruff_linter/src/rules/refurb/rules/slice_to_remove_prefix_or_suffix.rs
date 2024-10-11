@@ -4,14 +4,15 @@ use ruff_macros::{derive_message_formats, violation};
 use ruff_python_ast as ast;
 use ruff_python_semantic::SemanticModel;
 use ruff_source_file::Locator;
-use ruff_text_size::{Ranged, TextLen};
+use ruff_text_size::Ranged;
 
 /// ## What it does
 /// Checks for the removal of a prefix or suffix from a string by assigning
 /// the string to a slice after checking `.startswith()` or `.endswith()`, respectively.
 ///
 /// ## Why is this bad?
-/// The methods [`str.removeprefix`] and [`str.removesuffix`],
+/// The methods [`str.removeprefix`](https://docs.python.org/3/library/stdtypes.html#str.removeprefix)
+/// and [`str.removesuffix`](https://docs.python.org/3/library/stdtypes.html#str.removesuffix),
 /// introduced in Python 3.9, have the same behavior
 /// and are more readable and efficient.
 ///
@@ -33,9 +34,6 @@ use ruff_text_size::{Ranged, TextLen};
 /// ```python
 /// text = text.removeprefix("pre")
 /// ```
-///
-/// [`str.removeprefix`]: https://docs.python.org/3/library/stdtypes.html#str.removeprefix
-/// [`str.removesuffix`]: https://docs.python.org/3/library/stdtypes.html#str.removesuffix
 #[violation]
 pub struct SliceToRemovePrefixOrSuffix {
     string: String,
@@ -248,6 +246,27 @@ fn affix_removal_data<'a>(
         return None;
     }
     let slice = slice.as_slice_expr()?;
+
+    // Exit early if slice step is...
+    if slice
+        .step
+        .as_deref()
+        // present and
+        .is_some_and(|step| match step {
+            // not equal to 1
+            ast::Expr::NumberLiteral(ast::ExprNumberLiteral {
+                value: ast::Number::Int(x),
+                ..
+            }) => x.as_u8() != Some(1),
+            // and not equal to `None` or `True`
+            ast::Expr::NoneLiteral(_)
+            | ast::Expr::BooleanLiteral(ast::ExprBooleanLiteral { value: true, .. }) => false,
+            _ => true,
+        })
+    {
+        return None;
+    };
+
     let compr_test_expr = ast::comparable::ComparableExpr::from(
         &test.as_call_expr()?.func.as_attribute_expr()?.value,
     );
@@ -315,8 +334,9 @@ fn affix_matches_slice_bound(data: &RemoveAffixData, semantic: &SemanticModel) -
             }),
         ) => num
             .as_int()
-            .and_then(ast::Int::as_u32) // Only support prefix removal for size at most `u32::MAX`
-            .is_some_and(|x| x == string_val.to_str().text_len().to_u32()),
+            // Only support prefix removal for size at most `usize::MAX`
+            .and_then(ast::Int::as_usize)
+            .is_some_and(|x| x == string_val.chars().count()),
         (
             AffixKind::StartsWith,
             ast::Expr::Call(ast::ExprCall {
@@ -350,8 +370,8 @@ fn affix_matches_slice_bound(data: &RemoveAffixData, semantic: &SemanticModel) -
                 // Only support prefix removal for size at most `u32::MAX`
                 value
                     .as_int()
-                    .and_then(ast::Int::as_u32)
-                    .is_some_and(|x| x == string_val.to_str().text_len().to_u32())
+                    .and_then(ast::Int::as_usize)
+                    .is_some_and(|x| x == string_val.chars().count())
             },
         ),
         (

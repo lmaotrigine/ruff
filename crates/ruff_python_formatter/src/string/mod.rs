@@ -11,7 +11,10 @@ use ruff_text_size::{Ranged, TextRange};
 
 use crate::comments::{leading_comments, trailing_comments};
 use crate::expression::parentheses::in_parentheses_only_soft_line_break_or_space;
+use crate::other::f_string::FormatFString;
+use crate::other::string_literal::StringLiteralKind;
 use crate::prelude::*;
+use crate::string::any::AnyStringPart;
 use crate::QuoteStyle;
 
 mod any;
@@ -27,29 +30,48 @@ pub(crate) enum Quoting {
 
 /// Formats any implicitly concatenated string. This could be any valid combination
 /// of string, bytes or f-string literals.
-pub(crate) struct FormatStringContinuation<'a> {
-    string: &'a AnyString<'a>,
+pub(crate) struct FormatImplicitConcatenatedString<'a> {
+    string: AnyString<'a>,
 }
 
-impl<'a> FormatStringContinuation<'a> {
-    pub(crate) fn new(string: &'a AnyString<'a>) -> Self {
-        Self { string }
+impl<'a> FormatImplicitConcatenatedString<'a> {
+    pub(crate) fn new(string: impl Into<AnyString<'a>>) -> Self {
+        Self {
+            string: string.into(),
+        }
     }
 }
 
-impl Format<PyFormatContext<'_>> for FormatStringContinuation<'_> {
+impl Format<PyFormatContext<'_>> for FormatImplicitConcatenatedString<'_> {
     fn fmt(&self, f: &mut PyFormatter) -> FormatResult<()> {
         let comments = f.context().comments().clone();
         let quoting = self.string.quoting(&f.context().locator());
 
         let mut joiner = f.join_with(in_parentheses_only_soft_line_break_or_space());
 
-        for part in self.string.parts(quoting) {
+        for part in self.string.parts() {
+            let part_comments = comments.leading_dangling_trailing(&part);
+
+            let format_part = format_with(|f: &mut PyFormatter| match part {
+                AnyStringPart::String(part) => {
+                    let kind = if self.string.is_fstring() {
+                        #[allow(deprecated)]
+                        StringLiteralKind::InImplicitlyConcatenatedFString(quoting)
+                    } else {
+                        StringLiteralKind::String
+                    };
+
+                    part.format().with_options(kind).fmt(f)
+                }
+                AnyStringPart::Bytes(bytes_literal) => bytes_literal.format().fmt(f),
+                AnyStringPart::FString(part) => FormatFString::new(part, quoting).fmt(f),
+            });
+
             joiner.entry(&format_args![
                 line_suffix_boundary(),
-                leading_comments(comments.leading(&part)),
-                part,
-                trailing_comments(comments.trailing(&part))
+                leading_comments(part_comments.leading),
+                format_part,
+                trailing_comments(part_comments.trailing)
             ]);
         }
 

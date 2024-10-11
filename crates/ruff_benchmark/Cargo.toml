@@ -41,6 +41,7 @@ codspeed-criterion-compat = { workspace = true, default-features = false, option
 criterion = { workspace = true, default-features = false }
 once_cell = { workspace = true }
 rayon = { workspace = true }
+rustc-hash = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
@@ -66,4 +67,4 @@ codspeed = ["codspeed-criterion-compat"]
 mimalloc = { workspace = true }
 
 [target.'cfg(all(not(target_os = "windows"), not(target_os = "openbsd"), any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "powerpc64")))'.dev-dependencies]
-tikv-jemallocator = { workspace = true, features = ["unprefixed_malloc_on_supported_platforms"] }
+tikv-jemallocator = { workspace = true }
