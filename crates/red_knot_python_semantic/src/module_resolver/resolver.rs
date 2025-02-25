@@ -6,13 +6,13 @@ use rustc_hash::{FxBuildHasher, FxHashSet};
 use ruff_db::files::{File, FilePath, FileRootKind};
 use ruff_db::system::{DirectoryEntry, System, SystemPath, SystemPathBuf};
 use ruff_db::vendored::{VendoredFileSystem, VendoredPath};
-use ruff_python_ast::python_version::PythonVersion;
+use ruff_python_ast::PythonVersion;
 
 use crate::db::Db;
 use crate::module_name::ModuleName;
 use crate::module_resolver::typeshed::{vendored_typeshed_versions, TypeshedVersions};
 use crate::site_packages::VirtualEnvironment;
-use crate::{Program, SearchPathSettings, SitePackages};
+use crate::{Program, PythonPath, SearchPathSettings};
 
 use super::module::{Module, ModuleKind};
 use super::path::{ModulePath, SearchPath, SearchPathValidationError};
@@ -171,7 +171,7 @@ impl SearchPaths {
             extra_paths,
             src_roots,
             custom_typeshed: typeshed,
-            site_packages: site_packages_paths,
+            python_path,
         } = settings;
 
         let system = db.system();
@@ -222,16 +222,16 @@ impl SearchPaths {
 
         static_paths.push(stdlib_path);
 
-        let site_packages_paths = match site_packages_paths {
-            SitePackages::Derived { venv_path } => {
+        let site_packages_paths = match python_path {
+            PythonPath::SysPrefix(sys_prefix) => {
                 // TODO: We may want to warn here if the venv's python version is older
                 //  than the one resolved in the program settings because it indicates
                 //  that the `target-version` is incorrectly configured or that the
                 //  venv is out of date.
-                VirtualEnvironment::new(venv_path, system)
+                VirtualEnvironment::new(sys_prefix, system)
                     .and_then(|venv| venv.site_packages_directories(system))?
             }
-            SitePackages::Known(paths) => paths
+            PythonPath::KnownSitePackages(paths) => paths
                 .iter()
                 .map(|path| canonicalize(path, system))
                 .collect(),
@@ -725,7 +725,7 @@ mod tests {
         assert_const_function_query_was_not_run, assert_function_query_was_not_run,
     };
     use ruff_db::Db;
-    use ruff_python_ast::python_version::PythonVersion;
+    use ruff_python_ast::PythonVersion;
 
     use crate::db::tests::TestDb;
     use crate::module_name::ModuleName;
@@ -1310,7 +1310,7 @@ mod tests {
                     extra_paths: vec![],
                     src_roots: vec![src.clone()],
                     custom_typeshed: Some(custom_typeshed),
-                    site_packages: SitePackages::Known(vec![site_packages]),
+                    python_path: PythonPath::KnownSitePackages(vec![site_packages]),
                 },
             },
         )
@@ -1816,7 +1816,7 @@ not_a_directory
                     extra_paths: vec![],
                     src_roots: vec![SystemPathBuf::from("/src")],
                     custom_typeshed: None,
-                    site_packages: SitePackages::Known(vec![
+                    python_path: PythonPath::KnownSitePackages(vec![
                         venv_site_packages,
                         system_site_packages,
                     ]),

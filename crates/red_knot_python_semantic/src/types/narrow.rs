@@ -6,9 +6,10 @@ use crate::semantic_index::definition::Definition;
 use crate::semantic_index::expression::Expression;
 use crate::semantic_index::symbol::{ScopeId, ScopedSymbolId, SymbolTable};
 use crate::semantic_index::symbol_table;
+use crate::types::infer::infer_same_file_expression_type;
 use crate::types::{
-    infer_expression_types, ClassLiteralType, IntersectionBuilder, KnownClass, KnownFunction,
-    SubclassOfType, Truthiness, Type, UnionBuilder,
+    infer_expression_types, IntersectionBuilder, KnownClass, SubclassOfType, Truthiness, Type,
+    UnionBuilder,
 };
 use crate::Db;
 use itertools::Itertools;
@@ -110,7 +111,7 @@ impl KnownConstraintFunction {
                 }
                 Some(builder.build())
             }
-            Type::ClassLiteral(ClassLiteralType { class }) => Some(constraint_fn(class)),
+            Type::ClassLiteral(class_literal) => Some(constraint_fn(class_literal.class())),
             Type::SubclassOf(subclass_of_ty) => {
                 subclass_of_ty.subclass_of().into_class().map(constraint_fn)
             }
@@ -397,7 +398,7 @@ impl<'db> NarrowingConstraintsBuilder<'db> {
 
                     if callable_ty
                         .into_class_literal()
-                        .is_some_and(|c| c.class.is_known(self.db, KnownClass::Type))
+                        .is_some_and(|c| c.class().is_known(self.db, KnownClass::Type))
                     {
                         let symbol = self
                             .symbols()
@@ -428,9 +429,7 @@ impl<'db> NarrowingConstraintsBuilder<'db> {
         // and `issubclass`, for example `isinstance(x, str | (int | float))`.
         match callable_ty {
             Type::FunctionLiteral(function_type) if expr_call.arguments.keywords.is_empty() => {
-                let function = function_type
-                    .known(self.db)
-                    .and_then(KnownFunction::constraint_function)?;
+                let function = function_type.known(self.db)?.into_constraint_function()?;
 
                 let [ast::Expr::Name(ast::ExprName { id, .. }), class_info] =
                     &*expr_call.arguments.args
@@ -455,7 +454,7 @@ impl<'db> NarrowingConstraintsBuilder<'db> {
             Type::ClassLiteral(class_type)
                 if expr_call.arguments.args.len() == 1
                     && expr_call.arguments.keywords.is_empty()
-                    && class_type.class.is_known(self.db, KnownClass::Bool) =>
+                    && class_type.class().is_known(self.db, KnownClass::Bool) =>
             {
                 self.evaluate_expression_node_constraint(
                     &expr_call.arguments.args[0],
@@ -497,11 +496,8 @@ impl<'db> NarrowingConstraintsBuilder<'db> {
         if let Some(ast::ExprName { id, .. }) = subject.node_ref(self.db).as_name_expr() {
             // SAFETY: we should always have a symbol for every Name node.
             let symbol = self.symbols().symbol_id_by_name(id).unwrap();
-            let scope = self.scope();
-            let inference = infer_expression_types(self.db, cls);
-            let ty = inference
-                .expression_type(cls.node_ref(self.db).scoped_expression_id(self.db, scope))
-                .to_instance(self.db);
+            let ty = infer_same_file_expression_type(self.db, cls).to_instance(self.db);
+
             let mut constraints = NarrowingConstraints::default();
             constraints.insert(symbol, ty);
             Some(constraints)

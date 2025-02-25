@@ -21,11 +21,19 @@ pub(crate) struct Signature<'db> {
 }
 
 impl<'db> Signature<'db> {
+    pub(crate) fn new(parameters: Parameters<'db>, return_ty: Option<Type<'db>>) -> Self {
+        Self {
+            parameters,
+            return_ty,
+        }
+    }
+
     /// Return a todo signature: (*args: Todo, **kwargs: Todo) -> Todo
-    pub(crate) fn todo() -> Self {
+    #[allow(unused_variables)] // 'reason' only unused in debug builds
+    pub(crate) fn todo(reason: &'static str) -> Self {
         Self {
             parameters: Parameters::todo(),
-            return_ty: Some(todo_type!("return type")),
+            return_ty: Some(todo_type!(reason)),
         }
     }
 
@@ -64,6 +72,10 @@ impl<'db> Signature<'db> {
 pub(crate) struct Parameters<'db>(Vec<Parameter<'db>>);
 
 impl<'db> Parameters<'db> {
+    pub(crate) fn new(parameters: impl IntoIterator<Item = Parameter<'db>>) -> Self {
+        Self(parameters.into_iter().collect())
+    }
+
     /// Return todo parameters: (*args: Todo, **kwargs: Todo)
     fn todo() -> Self {
         Self(vec![
@@ -233,6 +245,18 @@ pub(crate) struct Parameter<'db> {
 }
 
 impl<'db> Parameter<'db> {
+    pub(crate) fn new(
+        name: Option<Name>,
+        annotated_ty: Option<Type<'db>>,
+        kind: ParameterKind<'db>,
+    ) -> Self {
+        Self {
+            name,
+            annotated_ty,
+            kind,
+        }
+    }
+
     fn from_node_and_kind(
         db: &'db dyn Db,
         definition: Definition<'db>,
@@ -322,7 +346,8 @@ pub(crate) enum ParameterKind<'db> {
 mod tests {
     use super::*;
     use crate::db::tests::{setup_db, TestDb};
-    use crate::types::{global_symbol, FunctionType, KnownClass};
+    use crate::symbol::global_symbol;
+    use crate::types::{FunctionType, KnownClass};
     use ruff_db::system::DbWithTestSystem;
 
     #[track_caller]
@@ -626,7 +651,7 @@ mod tests {
         .unwrap();
         let func = get_function_f(&db, "/src/a.py");
 
-        let expected_sig = Signature::todo();
+        let expected_sig = Signature::todo("return type of decorated function");
 
         // With no decorators, internal and external signature are the same
         assert_eq!(func.signature(&db), &expected_sig);

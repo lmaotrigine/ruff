@@ -816,6 +816,7 @@ if True:
 
         ----- stderr -----
         ruff failed
+          Cause: Failed to load configuration `[RUFF-TOML-PATH]`
           Cause: Failed to parse [RUFF-TOML-PATH]
           Cause: TOML parse error at line 1, column 1
           |
@@ -855,6 +856,7 @@ format = "json"
 
         ----- stderr -----
         ruff failed
+          Cause: Failed to load configuration `[RUFF-TOML-PATH]`
           Cause: Failed to parse [RUFF-TOML-PATH]
           Cause: TOML parse error at line 2, column 10
           |
@@ -2083,4 +2085,51 @@ fn range_formatting_notebook() {
     ----- stderr -----
     error: Failed to format main.ipynb: Range formatting isn't supported for notebooks.
     ");
+}
+
+/// Test that the formatter respects `per-file-target-version`. Context managers can't be
+/// parenthesized like this before Python 3.10.
+///
+/// Adapted from <https://github.com/python/cpython/issues/56991#issuecomment-1093555135>
+#[test]
+fn per_file_target_version_formatter() {
+    // without `per-file-target-version` this should not be reformatted in the same way
+    assert_cmd_snapshot!(Command::new(get_cargo_bin(BIN_NAME))
+        .args(["format", "--isolated", "--stdin-filename", "test.py", "--target-version=py38"])
+        .arg("-")
+        .pass_stdin(r#"
+with open("a_really_long_foo") as foo, open("a_really_long_bar") as bar, open("a_really_long_baz") as baz:
+    pass
+"#), @r#"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+    with open("a_really_long_foo") as foo, open("a_really_long_bar") as bar, open(
+        "a_really_long_baz"
+    ) as baz:
+        pass
+
+    ----- stderr -----
+    "#);
+
+    assert_cmd_snapshot!(Command::new(get_cargo_bin(BIN_NAME))
+        .args(["format", "--isolated", "--stdin-filename", "test.py", "--target-version=py38"])
+        .args(["--config", r#"per-file-target-version = {"test.py" = "py311"}"#])
+        .arg("-")
+        .pass_stdin(r#"
+with open("a_really_long_foo") as foo, open("a_really_long_bar") as bar, open("a_really_long_baz") as baz:
+    pass
+"#), @r#"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+    with (
+        open("a_really_long_foo") as foo,
+        open("a_really_long_bar") as bar,
+        open("a_really_long_baz") as baz,
+    ):
+        pass
+
+    ----- stderr -----
+    "#);
 }
